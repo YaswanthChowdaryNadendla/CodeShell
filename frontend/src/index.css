@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&display=swap');
+@import url("https://cdn.jsdelivr.net/npm/@fontsource/cascadia-code/index.css");
+@import url("https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono/index.css");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    @apply h-full w-full overflow-hidden text-slate-300 font-sans select-none m-0 p-0;
+    background-color: #0d1117;
+  }
+}
+
+/* Modern dark scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Monaco override styles to remove default solid boxes */
+.monaco-editor, .monaco-editor-background, .monaco-editor .margin {
+  background-color: transparent !important;
+}
+
+::selection {
+  background-color: rgba(88, 166, 255, 0.2);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(20px) scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 250ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
