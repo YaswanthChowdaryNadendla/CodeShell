@@ -111,6 +111,24 @@ export default function App() {
     };
   }, []);
 
+  // Reset execution state and terminate active runs when switching files
+  useEffect(() => {
+    if (wsRef.current) {
+      const activeSocket = wsRef.current;
+      wsRef.current = null;
+      try {
+        activeSocket.send({ type: 'kill' });
+      } catch (err) {}
+      activeSocket.close();
+    }
+    setIsRunning(false);
+    setTerminalLines([]);
+    setOutput('');
+    setError('');
+    setStatus('Ready');
+    setExecutionTime('');
+  }, [activeFileId]);
+
   const handleBeautify = () => {
     setFormatTrigger(prev => prev + 1);
   };
@@ -359,6 +377,7 @@ export default function App() {
     const socket = createExecutionSocket(
       // onMessage
       (msg) => {
+        if (wsRef.current !== socket) return;
         if (msg.type === 'output') {
           setTerminalLines(prev => {
             const filtered = prev.filter(line => !line.isTemporary);
@@ -433,11 +452,13 @@ export default function App() {
       },
       // onClose
       () => {
+        if (wsRef.current !== socket) return;
         setIsRunning(false);
         wsRef.current = null;
       },
       // onError
       (err) => {
+        if (wsRef.current !== socket) return;
         setTerminalLines(prev => {
           const filtered = prev.filter(line => !line.isTemporary);
           return [...filtered, { type: 'error', text: '\n[WebSocket Connection Error]\n' }];
@@ -447,6 +468,7 @@ export default function App() {
       },
       // onOpen
       () => {
+        if (wsRef.current !== socket) return;
         socket.send({
           type: 'run',
           language: activeFile.language,
