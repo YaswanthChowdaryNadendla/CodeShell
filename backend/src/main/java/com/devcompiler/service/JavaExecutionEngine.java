@@ -177,7 +177,6 @@ public class JavaExecutionEngine implements ExecutionEngine {
                     "java",
                     "-XX:+TieredCompilation",   // enable tiered compilation infrastructure
                     "-XX:TieredStopAtLevel=1",  // stop at interpreter; skip C1/C2 JIT
-                    "-Xverify:none",            // skip bytecode verification (trusted javac output)
                     "-cp", ".",
                     className
             );
