@@ -12,7 +12,6 @@ export function formatBraceLanguage(code) {
   for (let i = 0; i < code.length; i++) {
     const char = code[i];
     const nextChar = code[i + 1] || '';
-    const prevChar = code[i - 1] || '';
 
     // Handle string escape sequences
     if (isEscaped) {
@@ -171,7 +170,7 @@ export function formatBraceLanguage(code) {
     }
 
     // Apply safe operator spacing outside string literals
-    const processedLine = formatOperators(trimmed);
+    const processedLine = trimmed.startsWith('#') ? trimmed : formatOperators(trimmed);
     const formattedLine = indentStr.repeat(currentLineIndent) + processedLine;
     formattedLines.push(formattedLine);
 
