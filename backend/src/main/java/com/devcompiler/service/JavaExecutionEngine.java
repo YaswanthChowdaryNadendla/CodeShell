@@ -15,7 +15,6 @@
 //
 // @Service
 // public class JavaExecutionEngine implements ExecutionEngine {
-//
 //     private static final int TIMEOUT_SECONDS = 30;
 //
 //     @Override
@@ -67,8 +66,8 @@ import java.util.regex.Pattern;
 public class JavaExecutionEngine implements ExecutionEngine {
 
     // ─── Timeouts ────────────────────────────────────────────────────────────
-    private static final int COMPILE_TIMEOUT   = 10;
-    private static final int RUN_TIMEOUT       = 5;
+    private static final int COMPILE_TIMEOUT = 10;
+    private static final int RUN_TIMEOUT     = 5;
 
     // ─── Compilation Cache ───────────────────────────────────────────────────
     private static final int  MAX_CACHE_ENTRIES = 200;
@@ -77,7 +76,7 @@ public class JavaExecutionEngine implements ExecutionEngine {
 
     /**
      * LRU map: SHA-256(sanitizedCode) → cache sub-directory containing .class files.
-     * Bounded at MAX_CACHE_ENTRIES; eviction deletes files from disk.
+     * Bounded at MAX_CACHE_ENTRIES; eviction deletes files from disk automatically.
      */
     @SuppressWarnings("serial")
     private final Map<String, Path> compilationCache =
@@ -109,92 +108,158 @@ public class JavaExecutionEngine implements ExecutionEngine {
     // ─── Entry Point ─────────────────────────────────────────────────────────
     @Override
     public CompileResponse execute(String code, String input) {
+
+        // ── [PERF] Total Request timer starts here ────────────────────────────
         long totalStart = System.currentTimeMillis();
         Path tempDir    = null;
+        Process process = null;
 
         try {
-            // ── Detect class name & sanitise code ────────────────────────────
+            // Sanitise & hash (negligible overhead, not separately timed)
             String className     = detectClassName(code);
             String sanitizedCode = sanitizeCode(code);
             String codeHash      = sha256(sanitizedCode);
 
-            // ── Stage 1: Create isolated temp directory + write source ────────
-            long fsStart = System.currentTimeMillis();
+            // ── [PERF] Stage 1: Temp Directory Creation ───────────────────────
+            long t0 = System.currentTimeMillis();
             tempDir = Files.createTempDirectory("devcompiler-java-");
+            long tempDirMs = System.currentTimeMillis() - t0;
+
+            // ── [PERF] Stage 2: Source File Write ─────────────────────────────
+            long t1 = System.currentTimeMillis();
             Path sourceFile = tempDir.resolve(className + ".java");
             Files.writeString(sourceFile, sanitizedCode, StandardCharsets.UTF_8);
-            long fileCreateMs = System.currentTimeMillis() - fsStart;
+            long sourceWriteMs = System.currentTimeMillis() - t1;
 
-            // ── Stage 2: Compile or restore from cache ────────────────────────
-            long    compileMs;
+            // ── [PERF] Stage 3: Compilation (or cache restore) ────────────────
             boolean cacheHit;
+            long    compileMs;
 
             synchronized (compilationCache) {
                 cacheHit = compilationCache.containsKey(codeHash);
             }
 
+            long t2 = System.currentTimeMillis();
+
             if (cacheHit) {
-                // CACHE HIT — copy .class files from cache into the run temp dir
-                long restoreStart = System.currentTimeMillis();
+                // CACHE HIT — copy .class files from persistent cache into run temp dir
                 Path cachedDir;
                 synchronized (compilationCache) {
                     cachedDir = compilationCache.get(codeHash);
                 }
                 copyCachedClasses(cachedDir, tempDir);
-                compileMs = System.currentTimeMillis() - restoreStart;
                 cacheHits.incrementAndGet();
 
             } else {
                 // CACHE MISS — invoke javac
-                long compileStart = System.currentTimeMillis();
                 CompileResponse compileResult = compileJava(tempDir, className);
-                compileMs = System.currentTimeMillis() - compileStart;
                 cacheMisses.incrementAndGet();
 
                 if (!compileResult.isSuccess()) {
-                    // Compilation error — return immediately with partial metrics
+                    compileMs = System.currentTimeMillis() - t2;
                     long totalMs = System.currentTimeMillis() - totalStart;
+                    printPerfLog(tempDirMs, sourceWriteMs, compileMs, 0, 0, 0, totalMs, false);
                     return buildResponse(false, "", compileResult.getError(),
                             compileMs + "ms",
-                            fileCreateMs, compileMs, 0L, 0L, totalMs, false);
+                            tempDirMs, sourceWriteMs, compileMs, 0, 0, 0, totalMs, false);
                 }
 
-                // Cache the freshly compiled .class files for future requests
+                // Store compiled .class files in the persistent cache
                 storeCachedClasses(codeHash, tempDir);
             }
 
-            // ── Stage 3: Execute ──────────────────────────────────────────────
-            long runStart = System.currentTimeMillis();
-            CompileResponse runResult = runJava(tempDir, className, input, runStart);
-            long execMs = System.currentTimeMillis() - runStart;
+            compileMs = System.currentTimeMillis() - t2;
 
-            // ── Stage 4: Cleanup ──────────────────────────────────────────────
-            long cleanupStart = System.currentTimeMillis();
+            // ── [PERF] Stage 4: JVM Startup (OS process fork overhead) ────────
+            // This measures the wall-clock time for the OS to create the JVM process.
+            // Actual JVM class-loading and main() invocation are measured in Stage 5.
+            ProcessBuilder pb = new ProcessBuilder(
+                    "java",
+                    "-XX:+TieredCompilation",   // enable tiered compilation infrastructure
+                    "-XX:TieredStopAtLevel=1",  // stop at interpreter; skip C1/C2 JIT
+                    "-Xverify:none",            // skip bytecode verification (trusted javac output)
+                    "-cp", ".",
+                    className
+            );
+            pb.directory(tempDir.toFile());
+
+            long t3 = System.currentTimeMillis();
+            process = pb.start();
+            long jvmStartMs = System.currentTimeMillis() - t3;
+
+            // Feed stdin immediately after process starts
+            if (input != null && !input.isBlank()) {
+                try (var os = process.getOutputStream()) {
+                    os.write(input.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                }
+            } else {
+                process.getOutputStream().close();
+            }
+
+            // Drain stdout / stderr concurrently to prevent blocking
+            StreamGobbler outputGobbler = new StreamGobbler(process.getInputStream());
+            StreamGobbler errorGobbler  = new StreamGobbler(process.getErrorStream());
+            Thread outThread = new Thread(outputGobbler);
+            Thread errThread = new Thread(errorGobbler);
+            outThread.start();
+            errThread.start();
+
+            // ── [PERF] Stage 5: Execution (JVM class-loading + program run) ───
+            // This is the dominant cost for short programs on cold JVM instances.
+            long t4 = System.currentTimeMillis();
+            boolean finished = process.waitFor(RUN_TIMEOUT, TimeUnit.SECONDS);
+            long execMs = System.currentTimeMillis() - t4;
+
+            if (!finished) {
+                process.destroyForcibly();
+                outThread.interrupt();
+                errThread.interrupt();
+                long totalMs = System.currentTimeMillis() - totalStart;
+                printPerfLog(tempDirMs, sourceWriteMs, compileMs, jvmStartMs, execMs, 0, totalMs, cacheHit);
+                return buildResponse(false, outputGobbler.getResult(),
+                        "Time Limit Exceeded: execution took longer than " + RUN_TIMEOUT + "s.",
+                        execMs + "ms",
+                        tempDirMs, sourceWriteMs, compileMs, jvmStartMs, execMs, 0, totalMs, cacheHit);
+            }
+
+            outThread.join(1000);
+            errThread.join(1000);
+
+            int    exitCode = process.exitValue();
+            String stdout   = outputGobbler.getResult();
+            String stderr   = errorGobbler.getResult();
+
+            // ── [PERF] Stage 6: Cleanup ───────────────────────────────────────
+            long t5 = System.currentTimeMillis();
             cleanupDirectory(tempDir);
             tempDir = null; // prevent double-cleanup in finally
-            long cleanupMs = System.currentTimeMillis() - cleanupStart;
+            long cleanupMs = System.currentTimeMillis() - t5;
 
-            // ── Total ─────────────────────────────────────────────────────────
+            // ── [PERF] Total Request ──────────────────────────────────────────
             long totalMs = System.currentTimeMillis() - totalStart;
 
-            printMetrics(fileCreateMs, compileMs, execMs, cleanupMs, totalMs, cacheHit);
+            printPerfLog(tempDirMs, sourceWriteMs, compileMs, jvmStartMs, execMs, cleanupMs, totalMs, cacheHit);
 
-            return buildResponse(
-                    runResult.isSuccess(),
-                    runResult.getOutput(),
-                    runResult.getError(),
-                    execMs + "ms",
-                    fileCreateMs, compileMs, execMs, cleanupMs, totalMs, cacheHit
-            );
+            if (exitCode != 0) {
+                String err = stderr.isBlank()
+                        ? "Runtime Error (exit code: " + exitCode + ")"
+                        : stderr;
+                return buildResponse(false, stdout, err, execMs + "ms",
+                        tempDirMs, sourceWriteMs, compileMs, jvmStartMs, execMs, cleanupMs, totalMs, cacheHit);
+            }
 
-        } catch (IOException e) {
+            return buildResponse(true, stdout, stderr, execMs + "ms",
+                    tempDirMs, sourceWriteMs, compileMs, jvmStartMs, execMs, cleanupMs, totalMs, cacheHit);
+
+        } catch (IOException | InterruptedException e) {
+            Thread.currentThread().interrupt();
             long totalMs = System.currentTimeMillis() - totalStart;
             return new CompileResponse(false, "",
-                    "System IO Error: " + e.getMessage(), totalMs + "ms");
+                    "System Error: " + e.getMessage(), totalMs + "ms");
         } finally {
-            if (tempDir != null) {
-                cleanupDirectory(tempDir);
-            }
+            if (process != null) process.destroy();
+            if (tempDir != null) cleanupDirectory(tempDir);
         }
     }
 
@@ -209,7 +274,7 @@ public class JavaExecutionEngine implements ExecutionEngine {
             }
             return hex.toString();
         } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is guaranteed by the Java spec — this branch is unreachable
+            // SHA-256 is guaranteed by the Java specification — this is unreachable
             throw new RuntimeException("SHA-256 unavailable", e);
         }
     }
@@ -322,118 +387,69 @@ public class JavaExecutionEngine implements ExecutionEngine {
         }
     }
 
-    // ─── Execution ────────────────────────────────────────────────────────────
-    private CompileResponse runJava(Path tempDir, String className, String input, long startTime) {
-        Process process  = null;
-        Thread errThread = null;
-        Thread outThread = null;
-        try {
-            // Optimised JVM flags for fast startup on low-resource / cloud environments:
-            //   TieredStopAtLevel=1 — interpreter-only mode; skip C1/C2 JIT compilation
-            //   Xverify:none        — skip bytecode verification (trusted javac output)
-            ProcessBuilder pb = new ProcessBuilder(
-                    "java",
-                    "-XX:+TieredCompilation",
-                    "-XX:TieredStopAtLevel=1",
-                    "-Xverify:none",
-                    "-cp", ".",
-                    className
-            );
-            pb.directory(tempDir.toFile());
-            process = pb.start();
+    // ─── [PERF] Log Printer ───────────────────────────────────────────────────
+    /**
+     * Emits structured [PERF] lines to stdout so they appear in Render / Docker logs.
+     *
+     * Timing breakdown:
+     *   Temp Directory Creation — OS tmpfs allocation (usually < 5 ms)
+     *   Source Write            — disk I/O for .java file
+     *   Compilation             — javac wall-clock time (0 on cache hit)
+     *   JVM Startup             — OS process fork / exec overhead for `java`
+     *   Execution               — JVM class-loading + main() runtime (dominant cost)
+     *   Cleanup                 — recursive temp dir deletion
+     *   Total Request           — sum of all stages + overhead
+     *
+     * NOTE: "JVM Startup" measures only the pb.start() call (OS fork).
+     *       The JVM class-loading phase is captured inside "Execution" because
+     *       it cannot be observed from outside the child process without bytecode injection.
+     *       On a cold Render instance, "Execution" will be 300–800 ms for a Hello World —
+     *       that entire cost is JVM class-loading.
+     */
+    private void printPerfLog(long tempDirMs, long sourceWriteMs,
+                               long compileMs,  long jvmStartMs,
+                               long execMs,     long cleanupMs,
+                               long totalMs,    boolean cacheHit) {
 
-            // Feed stdin
-            if (input != null && !input.isBlank()) {
-                try (var os = process.getOutputStream()) {
-                    os.write(input.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
-            } else {
-                process.getOutputStream().close();
-            }
-
-            // Drain stdout / stderr concurrently
-            StreamGobbler outputGobbler = new StreamGobbler(process.getInputStream());
-            StreamGobbler errorGobbler  = new StreamGobbler(process.getErrorStream());
-            outThread = new Thread(outputGobbler);
-            errThread = new Thread(errorGobbler);
-            outThread.start();
-            errThread.start();
-
-            boolean finished = process.waitFor(RUN_TIMEOUT, TimeUnit.SECONDS);
-            long elapsed = System.currentTimeMillis() - startTime;
-
-            if (!finished) {
-                process.destroyForcibly();
-                outThread.interrupt();
-                errThread.interrupt();
-                return new CompileResponse(false, outputGobbler.getResult(),
-                        "Time Limit Exceeded: execution took longer than " + RUN_TIMEOUT + "s.",
-                        elapsed + "ms");
-            }
-
-            outThread.join(1000);
-            errThread.join(1000);
-
-            int    exitCode = process.exitValue();
-            String stdout   = outputGobbler.getResult();
-            String stderr   = errorGobbler.getResult();
-
-            if (exitCode != 0) {
-                String err = stderr.isBlank()
-                        ? "Runtime Error (exit code: " + exitCode + ")"
-                        : stderr;
-                return new CompileResponse(false, stdout, err, elapsed + "ms");
-            }
-
-            return new CompileResponse(true, stdout, stderr, elapsed + "ms");
-
-        } catch (IOException | InterruptedException e) {
-            Thread.currentThread().interrupt();
-            long elapsed = System.currentTimeMillis() - startTime;
-            return new CompileResponse(false, "",
-                    "Execution Exception: " + e.getMessage(), elapsed + "ms");
-        } finally {
-            if (process != null) process.destroy();
+        System.out.println("----------------------------------------");
+        System.out.printf("[PERF] Temp Directory Creation = %d ms%n",  tempDirMs);
+        System.out.printf("[PERF] Source Write            = %d ms%n",  sourceWriteMs);
+        if (cacheHit) {
+            System.out.println("[PERF] Compilation             = 0 ms  (CACHE HIT)");
+        } else {
+            System.out.printf("[PERF] Compilation             = %d ms%n", compileMs);
         }
+        System.out.printf("[PERF] JVM Startup             = %d ms%n",  jvmStartMs);
+        System.out.printf("[PERF] Execution               = %d ms%n",  execMs);
+        System.out.printf("[PERF] Cleanup                 = %d ms%n",  cleanupMs);
+        System.out.printf("[PERF] Total Request           = %d ms%n",  totalMs);
+        System.out.printf("[PERF] Cache                   = hits=%d  misses=%d%n",
+                cacheHits.get(), cacheMisses.get());
+        System.out.println("----------------------------------------");
     }
 
     // ─── Response Builder ─────────────────────────────────────────────────────
     private CompileResponse buildResponse(
             boolean success, String output, String error, String execTime,
-            long fileCreateMs, long compileMs, long execMs,
-            long cleanupMs, long totalMs, boolean cacheHit) {
+            long tempDirMs, long sourceWriteMs, long compileMs,
+            long jvmStartMs, long execMs, long cleanupMs,
+            long totalMs, boolean cacheHit) {
 
         String compileLabel = cacheHit ? "0ms (cached)" : compileMs + "ms";
 
-        Map<String, String> metrics = new java.util.LinkedHashMap<>();
-        metrics.put("fileCreateTime", fileCreateMs + "ms");
+        Map<String, String> metrics = new LinkedHashMap<>();
+        metrics.put("tempDirTime",    tempDirMs    + "ms");
+        metrics.put("sourceWrite",    sourceWriteMs + "ms");
         metrics.put("compileTime",    compileLabel);
-        metrics.put("executionTime",  execMs + "ms");
-        metrics.put("cleanupTime",    cleanupMs + "ms");
-        metrics.put("totalTime",      totalMs + "ms");
+        metrics.put("jvmStartup",     jvmStartMs   + "ms");
+        metrics.put("executionTime",  execMs        + "ms");
+        metrics.put("cleanupTime",    cleanupMs     + "ms");
+        metrics.put("totalTime",      totalMs       + "ms");
         metrics.put("cacheHit",       String.valueOf(cacheHit));
         metrics.put("cacheHits",      String.valueOf(cacheHits.get()));
         metrics.put("cacheMisses",    String.valueOf(cacheMisses.get()));
 
         return new CompileResponse(success, output, error, execTime, metrics);
-    }
-
-    // ─── Metrics Logger ───────────────────────────────────────────────────────
-    private void printMetrics(long fileCreateMs, long compileMs,
-                               long execMs, long cleanupMs,
-                               long totalMs, boolean cacheHit) {
-        System.out.printf("[JavaEngine] File Create  : %dms%n", fileCreateMs);
-        if (cacheHit) {
-            System.out.println("[JavaEngine] Compile Time : 0ms (CACHE HIT — skipped javac)");
-        } else {
-            System.out.printf("[JavaEngine] Compile Time : %dms%n", compileMs);
-        }
-        System.out.printf("[JavaEngine] Execution    : %dms%n", execMs);
-        System.out.printf("[JavaEngine] Cleanup      : %dms%n", cleanupMs);
-        System.out.printf("[JavaEngine] Total        : %dms%n", totalMs);
-        System.out.printf("[JavaEngine] Cache        : hits=%d  misses=%d%n",
-                cacheHits.get(), cacheMisses.get());
     }
 
     // ─── Directory Cleanup ────────────────────────────────────────────────────
