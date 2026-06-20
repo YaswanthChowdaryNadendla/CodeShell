@@ -3,6 +3,7 @@ com\devcompiler\service\JsExecutionEngine.class
 com\devcompiler\service\JavaExecutionEngine.class
 com\devcompiler\util\StreamGobbler.class
 com\devcompiler\service\CppExecutionEngine.class
+com\devcompiler\service\JavaExecutionEngine$1.class
 com\devcompiler\model\CompileRequest.class
 com\devcompiler\service\ExecutionEngine.class
 com\devcompiler\service\CompilerService.class
