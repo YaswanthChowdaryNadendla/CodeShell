@@ -216,8 +216,8 @@ package com.devcompiler.service;
 import com.devcompiler.model.CompileResponse;
 import com.devcompiler.util.StreamGobbler;
 import org.springframework.stereotype.Service;
-
 import java.io.File;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -230,7 +230,8 @@ import java.util.regex.Pattern;
 @Service
 public class JavaExecutionEngine implements ExecutionEngine {
 
-    private static final int TIMEOUT_SECONDS = 30;
+    private static final int COMPILE_TIMEOUT = 10;
+    private static final int RUN_TIMEOUT = 5;
 
     @Override
     public CompileResponse execute(String code, String input) {
@@ -299,7 +300,7 @@ public class JavaExecutionEngine implements ExecutionEngine {
             ProcessBuilder pb = new ProcessBuilder("javac", className + ".java");
             pb.directory(tempDir.toFile());
 
-            long start = System.currentTimeMillis();
+            long compileStart = System.currentTimeMillis();
             process = pb.start();
 
             StreamGobbler errorGobbler = new StreamGobbler(process.getErrorStream());
@@ -311,8 +312,10 @@ public class JavaExecutionEngine implements ExecutionEngine {
             errThread.start();
             outThread.start();
 
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            long elapsed = System.currentTimeMillis() - start;
+            boolean finished = process.waitFor(COMPILE_TIMEOUT, TimeUnit.SECONDS);
+            long elapsed = System.currentTimeMillis() - compileStart;
+
+            System.out.printf("[JavaEngine] Compilation finished in %dms%n", elapsed);
 
             if (!finished) {
                 process.destroyForcibly();
@@ -320,7 +323,7 @@ public class JavaExecutionEngine implements ExecutionEngine {
                         false,
                         "",
                         "Compilation Timeout: javac compiler took longer than "
-                                + TIMEOUT_SECONDS + " seconds.",
+                                + COMPILE_TIMEOUT + " seconds.",
                         elapsed + "ms"
                 );
             }
@@ -329,19 +332,6 @@ public class JavaExecutionEngine implements ExecutionEngine {
             outThread.join(1000);
 
             int exitCode = process.exitValue();
-
-            // DEBUG: Show all files created after compilation
-            File[] files = tempDir.toFile().listFiles();
-            if (files != null) {
-                StringBuilder debugFiles = new StringBuilder();
-
-                for (File f : files) {
-                    debugFiles.append(f.getName()).append("\n");
-                }
-
-                System.out.println("FILES IN TEMP DIR:");
-                System.out.println(debugFiles);
-            }
 
             if (exitCode != 0) {
                 String compilerErrors = errorGobbler.getResult();
@@ -357,22 +347,6 @@ public class JavaExecutionEngine implements ExecutionEngine {
                         elapsed + "ms"
                 );
             }
-
-            // DEBUG: Check if Main.class exists
-            Path classFile = tempDir.resolve(className + ".class");
-
-            if (!Files.exists(classFile)) {
-                return new CompileResponse(
-                        false,
-                        "",
-                        "DEBUG ERROR: " + className +
-                                ".class was not generated.\nTemp Dir: "
-                                + tempDir,
-                        elapsed + "ms"
-                );
-            }
-
-            System.out.println("DEBUG SUCCESS: Found class file -> " + classFile);
 
             return new CompileResponse(true, "", "", elapsed + "ms");
 
@@ -397,10 +371,18 @@ public class JavaExecutionEngine implements ExecutionEngine {
         Thread errThread = null;
         Thread outThread = null;
         try {
-            // We use -cp . (classpath current directory) to execute compiled bytecode
-            ProcessBuilder pb = new ProcessBuilder("java", "-cp", ".", className);
+            // Use TieredStopAtLevel=1 for fast JVM startup on low-resource environments
+            ProcessBuilder pb = new ProcessBuilder(
+                    "java",
+                    "-XX:+TieredCompilation",
+                    "-XX:TieredStopAtLevel=1",
+                    "-cp",
+                    ".",
+                    className
+            );
             pb.directory(tempDir.toFile());
 
+            long runStart = System.currentTimeMillis();
             process = pb.start();
 
             // Feed stdin to the process
@@ -423,14 +405,16 @@ public class JavaExecutionEngine implements ExecutionEngine {
             outThread.start();
             errThread.start();
 
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            long elapsed = System.currentTimeMillis() - startTime;
+            boolean finished = process.waitFor(RUN_TIMEOUT, TimeUnit.SECONDS);
+            long elapsed = System.currentTimeMillis() - runStart;
+
+            System.out.printf("[JavaEngine] Execution finished in %dms%n", elapsed);
 
             if (!finished) {
                 process.destroyForcibly();
                 outThread.interrupt();
                 errThread.interrupt();
-                return new CompileResponse(false, outputGobbler.getResult(), "Time Limit Exceeded: Execution took longer than " + TIMEOUT_SECONDS + " seconds.", elapsed + "ms");
+                return new CompileResponse(false, outputGobbler.getResult(), "Time Limit Exceeded: Execution took longer than " + RUN_TIMEOUT + " seconds.", elapsed + "ms");
             }
 
             outThread.join(1000);
