@@ -5,6 +5,7 @@ import ConsolePanel from './components/ConsolePanel';
 import Footer from './components/Footer';
 import Explorer from './components/Explorer';
 import { runCode } from './services/api';
+import { createExecutionSocket } from './services/websocket';
 
 const TEMPLATES = {
   java: `public class Main {
@@ -66,6 +67,8 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [executionTime, setExecutionTime] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [terminalLines, setTerminalLines] = useState([]);
+  const wsRef = useRef(null);
 
   const [dirtyFileIds, setDirtyFileIds] = useState([]);
   const [formatTrigger, setFormatTrigger] = useState(0);
@@ -98,6 +101,15 @@ export default function App() {
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [activeFileId]);
+
+  // Clean up WebSocket connection on component unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   const handleBeautify = () => {
     setFormatTrigger(prev => prev + 1);
@@ -280,6 +292,19 @@ export default function App() {
   };
 
   // Run code handler
+  const handleSendInput = (line) => {
+    if (wsRef.current) {
+      wsRef.current.send({ type: 'input', data: line + '\n' });
+      setTerminalLines(prev => [...prev, { type: 'input', text: line + '\n' }]);
+    }
+  };
+
+  const handleStop = () => {
+    if (wsRef.current) {
+      wsRef.current.send({ type: 'kill' });
+    }
+  };
+
   const handleRun = async () => {
     if (isRunning) return;
 
@@ -318,44 +343,120 @@ export default function App() {
     setOutput('');
     setError('');
     setExecutionTime('');
-
-    const response = await runCode(activeFile.language, code, input);
     
-    setIsRunning(false);
-    setOutput(response.output || '');
-    setError(response.error || '');
-    setExecutionTime(response.executionTime || '');
-
-    // Map error output to specific execution statuses
-    let mappedStatus = 'Success';
-    if (response.success) {
-      mappedStatus = 'Success';
-    } else {
-      const errLower = (response.error || '').toLowerCase();
-      if (errLower.includes('timeout') || errLower.includes('time limit exceeded')) {
-        mappedStatus = 'Timeout';
-      } else if (errLower.includes('error:') || errLower.includes('compiler') || errLower.includes('cannot find symbol') || errLower.includes('javac') || errLower.includes('compilation error')) {
-        mappedStatus = 'Compilation Error';
-      } else {
-        mappedStatus = 'Runtime Error';
-      }
+    const capitalize = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+    let startMsg = 'Starting execution...';
+    if (activeFile.language === 'java') startMsg = 'Compiling Java code...';
+    else if (activeFile.language === 'cpp') startMsg = 'Compiling C++ code...';
+    else if (activeFile.language === 'python') startMsg = 'Starting Python...';
+    else if (activeFile.language === 'javascript') startMsg = 'Starting JavaScript...';
+    else {
+      startMsg = `Starting ${capitalize(activeFile.language)}...`;
     }
-    setStatus(mappedStatus);
+    setTerminalLines([{ type: 'system', text: startMsg, isTemporary: true }]);
 
-    // Save run to execution history
-    const historyItem = {
-      id: Date.now(),
-      language: activeFile.language,
-      timestamp: new Date().toLocaleTimeString(),
-      executionTime: response.executionTime || '0ms',
-      status: mappedStatus
-    };
-    
-    setHistory(prev => {
-      const updated = [historyItem, ...prev].slice(0, 20);
-      localStorage.setItem('codeshell_history', JSON.stringify(updated));
-      return updated;
-    });
+    // Open WebSocket connection
+    const socket = createExecutionSocket(
+      // onMessage
+      (msg) => {
+        if (msg.type === 'output') {
+          setTerminalLines(prev => {
+            const filtered = prev.filter(line => !line.isTemporary);
+            return [...filtered, { type: 'output', text: msg.data }];
+          });
+        } else if (msg.type === 'error') {
+          setTerminalLines(prev => {
+            const filtered = prev.filter(line => !line.isTemporary);
+            return [...filtered, { type: 'error', text: msg.data }];
+          });
+        } else if (msg.type === 'system') {
+          if (msg.data.includes('Compilation Error:')) {
+            setTerminalLines(prev => {
+              const filtered = prev.filter(line => !line.isTemporary);
+              return [...filtered, { type: 'system', text: msg.data }];
+            });
+          } else if (msg.data.trim() === 'compilation_success') {
+            setTerminalLines(prev => prev.filter(line => !line.isTemporary));
+          } else if (msg.data.startsWith('Compiling')) {
+            setTerminalLines(prev => {
+              const filtered = prev.filter(line => !line.isTemporary);
+              return [...filtered, { type: 'system', text: msg.data.trim(), isTemporary: true }];
+            });
+          }
+        } else if (msg.type === 'exit') {
+          setIsRunning(false);
+          setExecutionTime(msg.executionTime || '0ms');
+          
+          let mappedStatus = 'Success';
+          if (msg.code === 0) {
+            mappedStatus = 'Success';
+          } else if (msg.code === -1) {
+            mappedStatus = 'Killed';
+            setTerminalLines(prev => {
+              const filtered = prev.filter(line => !line.isTemporary);
+              return [...filtered, { type: 'error', text: '\nExecution terminated by user.\n' }];
+            });
+            // Return early to skip normal history saving logic or just set status
+            setStatus(mappedStatus);
+            if (wsRef.current) {
+              wsRef.current.close();
+              wsRef.current = null;
+            }
+            return;
+          } else {
+            mappedStatus = 'Runtime Error';
+          }
+          setStatus(mappedStatus);
+
+          setTerminalLines(prev => prev.filter(line => !line.isTemporary));
+
+          // Save run to execution history
+          const historyItem = {
+            id: Date.now(),
+            language: activeFile.language,
+            timestamp: new Date().toLocaleTimeString(),
+            executionTime: msg.executionTime || '0ms',
+            status: mappedStatus
+          };
+          
+          setHistory(prev => {
+            const updated = [historyItem, ...prev].slice(0, 20);
+            localStorage.setItem('codeshell_history', JSON.stringify(updated));
+            return updated;
+          });
+
+          if (wsRef.current) {
+            wsRef.current.close();
+            wsRef.current = null;
+          }
+        }
+      },
+      // onClose
+      () => {
+        setIsRunning(false);
+        wsRef.current = null;
+      },
+      // onError
+      (err) => {
+        setTerminalLines(prev => {
+          const filtered = prev.filter(line => !line.isTemporary);
+          return [...filtered, { type: 'error', text: '\n[WebSocket Connection Error]\n' }];
+        });
+        setIsRunning(false);
+        wsRef.current = null;
+      },
+      // onOpen
+      () => {
+        socket.send({
+          type: 'run',
+          language: activeFile.language,
+          code: code,
+          preloadedInput: ""
+        });
+      }
+    );
+
+    wsRef.current = socket;
   };
 
   // Reset/Clear workspace handler
@@ -365,6 +466,7 @@ export default function App() {
     setError('');
     setStatus('Ready');
     setExecutionTime('');
+    setTerminalLines([]);
     
     if (activeFile && TEMPLATES[activeFile.language]) {
       setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: TEMPLATES[activeFile.language] } : f));
@@ -422,6 +524,7 @@ export default function App() {
         setLanguage={handleLanguageChange}
         onRun={handleRun}
         onClear={handleClear}
+        onStop={handleStop}
         isRunning={isRunning}
         status={status}
         code={code}
@@ -508,6 +611,8 @@ export default function App() {
             isRunning={isRunning}
             history={history}
             onClearHistory={handleClearHistory}
+            terminalLines={terminalLines}
+            onSendInput={handleSendInput}
           />
         </div>
       </div>

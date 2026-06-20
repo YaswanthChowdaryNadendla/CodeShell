@@ -34,8 +34,8 @@ public class PythonExecutionEngine implements ExecutionEngine {
             Files.writeString(sourceFile, code, StandardCharsets.UTF_8);
 
             // 3. Execute: python script.py
-            // ProcessBuilder pb = new ProcessBuilder("python3", "script.py");
-            ProcessBuilder pb = new ProcessBuilder("python3", "--version");
+            String pythonCmd = resolvePython();
+            ProcessBuilder pb = new ProcessBuilder(pythonCmd, "script.py");
             pb.directory(tempDir.toFile());
 
             process = pb.start();
@@ -98,6 +98,24 @@ public class PythonExecutionEngine implements ExecutionEngine {
             // 7. Cleanup the temporary folder and its contents
             cleanupDirectory(tempDir);
         }
+    }
+
+    private String resolvePython() {
+        String[] commands = {"python3", "python", "py"};
+        for (String cmd : commands) {
+            try {
+                Process process = new ProcessBuilder(cmd, "--version").start();
+                boolean finished = process.waitFor(2, TimeUnit.SECONDS);
+                if (finished && process.exitValue() == 0) {
+                    process.destroy();
+                    return cmd;
+                }
+                process.destroy();
+            } catch (Exception e) {
+                // Ignore and try next
+            }
+        }
+        return "python";
     }
 
     private void cleanupDirectory(Path tempDir) {

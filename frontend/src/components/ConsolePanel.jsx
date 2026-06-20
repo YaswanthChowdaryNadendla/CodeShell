@@ -30,14 +30,27 @@ export default function ConsolePanel({
   isRunning,
   history = [],
   onClearHistory,
+  terminalLines = [],
+  onSendInput,
 }) {
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState('output'); // 'output' | 'history'
+  const [terminalInput, setTerminalInput] = useState('');
+  const terminalEndRef = React.useRef(null);
 
-
+  React.useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [terminalLines]);
 
   const handleCopy = () => {
-    const textToCopy = error ? `${error}\n${output}` : output;
+    let textToCopy = '';
+    if (terminalLines && terminalLines.length > 0) {
+      textToCopy = terminalLines.map(line => line.type === 'input' ? `> ${line.text}` : line.text).join('');
+    } else {
+      textToCopy = error ? `${error}\n${output}` : output;
+    }
     if (!textToCopy) return;
 
     navigator.clipboard.writeText(textToCopy);
@@ -79,6 +92,12 @@ export default function ConsolePanel({
             ⏰ Timeout
           </span>
         );
+      case 'Killed':
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-[#f85149]/10 text-[#f85149] border border-[#f85149]/20">
+            🔴 Killed
+          </span>
+        );
       case 'Ready':
       default:
         return (
@@ -103,6 +122,8 @@ export default function ConsolePanel({
         return <span className="text-[#f85149] font-semibold flex items-center">🔴 Runtime Error{timeLabel}</span>;
       case 'Timeout':
         return <span className="text-[#db6d28] font-semibold flex items-center">⏰ Timeout</span>;
+      case 'Killed':
+        return <span className="text-[#f85149] font-semibold flex items-center">🔴 Killed</span>;
       case 'Ready':
       default:
         return <span className="text-[#8b949e] font-semibold flex items-center">Ready</span>;
@@ -112,188 +133,196 @@ export default function ConsolePanel({
   return (
     <div className="h-full flex flex-col bg-[#161b22] border border-[#30363d] rounded-xl overflow-hidden shadow-sm select-none">
       
-      {/* SECTION 1: CUSTOM INPUT CONSOLE */}
-      <div className="flex-1 flex flex-col border-b border-[#30363d] min-h-[150px]">
-        {/* Input Header */}
-        <div className="h-10 bg-[#0d1117] border-b border-[#30363d] flex items-center justify-between px-4">
-          <div className="flex items-center space-x-1.5">
-            <CornerDownLeft size={13} className="text-[#8b949e]" />
-            <span className="text-[14px] font-semibold text-[#e6edf3] font-sans">Standard Input (stdin)</span>
-          </div>
+      {/* Tab Headers (Segmented Equal Widths) */}
+      <div className="h-11 bg-[#0d1117] border-b border-[#30363d] flex items-center px-0 select-none overflow-hidden flex-shrink-0 w-full">
+        
+        {/* Column 1: Output Tab */}
+        <button
+          onClick={() => setActiveTab('output')}
+          className={`flex-1 h-full flex items-center justify-center space-x-1.5 text-xs font-sans font-semibold transition-colors duration-150 border-r border-[#30363d] group ${
+            activeTab === 'output'
+              ? 'bg-[#161b22] text-[#e6edf3] border-t-2 border-t-[#8b5cf6]'
+              : 'bg-[#0d1117] text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40'
+          }`}
+        >
+          <OutputIcon size={13} className="text-[#8b949e] group-hover:text-[#e6edf3] transition-colors" />
+          <span>Output</span>
+        </button>
 
-        </div>
+        {/* Column 2: History Tab */}
+        <button
+          onClick={() => setActiveTab('history')}
+          className={`flex-1 h-full flex items-center justify-center space-x-1.5 text-xs font-sans font-semibold transition-colors duration-150 border-r border-[#30363d] group ${
+            activeTab === 'history'
+              ? 'bg-[#161b22] text-[#e6edf3] border-t-2 border-t-[#8b5cf6]'
+              : 'bg-[#0d1117] text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40'
+          }`}
+        >
+          <Clock size={13} className="text-[#8b949e] group-hover:text-[#e6edf3] transition-colors" />
+          <span>History</span>
+          <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-[#30363d] text-[#8b949e] group-hover:bg-[#21262d] group-hover:text-[#e6edf3] transition-all duration-150">
+            {history.length}
+          </span>
+        </button>
 
-        {/* Input Text Area */}
-        <div className="flex-1 p-3 bg-transparent select-text">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={isRunning}
-            placeholder="Provide custom input arguments here (one per line)..."
-            className="w-full h-full bg-transparent text-[#e6edf3] font-sans text-xs focus:outline-none resize-none placeholder-[#8b949e] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-        </div>
-      </div>
-
-      {/* SECTION 2: OUTPUT & HISTORY CONSOLE */}
-      <div className="flex-[1.5] flex flex-col min-h-[220px]">
-        {/* Tab Headers (Segmented Equal Widths) */}
-        <div className="h-11 bg-[#0d1117] border-b border-[#30363d] flex items-center px-0 select-none overflow-hidden flex-shrink-0 w-full">
-          
-          {/* Column 1: Output Tab */}
-          <button
-            onClick={() => setActiveTab('output')}
-            className={`flex-1 h-full flex items-center justify-center space-x-1.5 text-xs font-sans font-semibold transition-colors duration-150 border-r border-[#30363d] group ${
-              activeTab === 'output'
-                ? 'bg-[#161b22] text-[#e6edf3] border-t-2 border-t-[#8b5cf6]'
-                : 'bg-[#0d1117] text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40'
-            }`}
-          >
-            <OutputIcon size={13} className="text-[#8b949e] group-hover:text-[#e6edf3] transition-colors" />
-            <span>Output</span>
-          </button>
-
-          {/* Column 2: History Tab */}
-          <button
-            onClick={() => setActiveTab('history')}
-            className={`flex-1 h-full flex items-center justify-center space-x-1.5 text-xs font-sans font-semibold transition-colors duration-150 border-r border-[#30363d] group ${
-              activeTab === 'history'
-                ? 'bg-[#161b22] text-[#e6edf3] border-t-2 border-t-[#8b5cf6]'
-                : 'bg-[#0d1117] text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40'
-            }`}
-          >
-            <Clock size={13} className="text-[#8b949e] group-hover:text-[#e6edf3] transition-colors" />
-            <span>History</span>
-            <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-[#30363d] text-[#8b949e] group-hover:bg-[#21262d] group-hover:text-[#e6edf3] transition-all duration-150">
-              {history.length}
-            </span>
-          </button>
-
-          {/* Column 3: Action Button (Copy / Clear Logs) */}
-          <div className="flex-1 h-full flex items-center justify-center">
-            {activeTab === 'output' ? (
-              <button
-                onClick={handleCopy}
-                disabled={(!output && !error) || isRunning}
-                className="w-full h-full flex items-center justify-center space-x-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold font-sans text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40"
-                title="Copy Output"
-              >
-                {copied ? (
-                  <>
-                    <Check size={13} className="text-[#3fb950]" />
-                    <span className="text-[#3fb950]">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy size={13} className="text-[#8b949e]" />
-                    <span>Copy</span>
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                onClick={onClearHistory}
-                disabled={history.length === 0}
-                className="w-full h-full flex items-center justify-center space-x-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold font-sans text-[#8b949e] hover:text-[#f85149] hover:bg-[#161b22]/40"
-                title="Clear Run History"
-              >
-                <Trash2 size={13} className={history.length === 0 ? "text-[#8b949e]" : "text-[#f85149]"} />
-                <span className={history.length === 0 ? "text-[#8b949e]" : "text-[#f85149]"}>Clear Logs</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Tab Contents */}
-        {activeTab === 'output' ? (
-          // Output Viewer
-          <div className="flex-1 flex flex-col min-h-0 bg-transparent">
-            <div className="flex-1 p-4 overflow-y-auto font-sans text-xs select-text leading-relaxed relative">
-              {isRunning ? (
-                <div className="flex flex-col items-center justify-center h-full text-[#8b949e] space-y-2.5 select-none">
-                  <div className="w-6 h-6 border-2 border-[#58a6ff] border-t-transparent rounded-full animate-spin" />
-                  <p className="text-[11px] animate-pulse">Executing code on sandbox...</p>
-                </div>
-              ) : error ? (
-                <div className="text-[#f85149] font-sans whitespace-pre-wrap">{error}</div>
-              ) : output ? (
-                <div className="text-[#e6edf3] font-sans whitespace-pre-wrap">{output}</div>
+        {/* Column 3: Action Button (Copy / Clear Logs) */}
+        <div className="flex-1 h-full flex items-center justify-center">
+          {activeTab === 'output' ? (
+            <button
+              onClick={handleCopy}
+              disabled={(!output && !error && (!terminalLines || terminalLines.length === 0)) || isRunning}
+              className="w-full h-full flex items-center justify-center space-x-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold font-sans text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#161b22]/40"
+              title="Copy Output"
+            >
+              {copied ? (
+                <>
+                  <Check size={13} className="text-[#3fb950]" />
+                  <span className="text-[#3fb950]">Copied!</span>
+                </>
               ) : (
-                <div className="flex flex-col items-center justify-center h-full text-[#8b949e] space-y-2 select-none text-center font-sans">
-                  <h3 className="text-[24px] font-bold text-[#e6edf3]">Welcome to CodeShell</h3>
-                  <p className="text-[15px] font-medium text-[#8b949e] leading-relaxed">
-                    Write. Compile. Execute.
-                  </p>
-                  <p className="text-[14px] font-medium text-[#8b949e] leading-relaxed mt-2">
-                    Press Run or Ctrl + Enter to start coding.
-                  </p>
-                </div>
+                <>
+                  <Copy size={13} className="text-[#8b949e]" />
+                  <span>Copy</span>
+                </>
               )}
-            </div>
-
-            {/* Output Stats Footer */}
-            {!isRunning && status !== 'Ready' && (
-              <div className="h-8 bg-[#0d1117] border-t border-[#30363d] px-4 flex items-center text-[11px] font-sans text-[#8b949e] select-none">
-                {getStatusTextWithTime(status, executionTime)}
-              </div>
-            )}
-          </div>
-        ) : (
-          // History Log Viewer
-          <div className="flex-1 p-4 bg-transparent overflow-y-auto font-sans text-xs select-text leading-relaxed">
-            {history.length === 0 ? (
-              <div className="text-[#8b949e] italic flex items-center justify-center h-full select-none text-[11px]">
-                No execution logs found. Run code to populate the logs.
-              </div>
-            ) : (
-              <div className="flex flex-col space-y-3 select-none">
-                <div className="text-[10px] text-[#8b949e] uppercase font-bold tracking-wider border-b border-[#30363d] pb-2 flex justify-between font-sans">
-                  <span>Last 20 Runs</span>
-                  <span>Execution Log</span>
-                </div>
-                <div className="flex flex-col space-y-1.5">
-                  {history.map((run) => {
-                    const langMap = {
-                      java: { name: 'Java', ext: 'main.java' },
-                      python: { name: 'Python', ext: 'main.py' },
-                      javascript: { name: 'JavaScript', ext: 'main.js' },
-                      cpp: { name: 'C++', ext: 'main.cpp' }
-                    };
-                    const langInfo = langMap[run.language] || { name: run.language, ext: 'main.txt' };
-                    
-                    const getStatusText = (s) => {
-                      switch (s) {
-                        case 'Success': return <span className="text-[#3fb950]">Success</span>;
-                        case 'Compilation Error': return <span className="text-[#d29922]">Compilation Error</span>;
-                        case 'Runtime Error': return <span className="text-[#f85149]">Runtime Error</span>;
-                        case 'Timeout': return <span className="text-[#db6d28]">Timeout</span>;
-                        default: return <span>{s}</span>;
-                      }
-                    };
-
-                    return (
-                      <div key={run.id} className="py-2 px-3 flex items-center justify-between hover:bg-[#21262d]/50 rounded-lg transition-all duration-150 border border-transparent hover:border-[#30363d] font-sans text-[11px] text-[#8b949e]">
-                        <div className="flex items-center space-x-2">
-                          <span className="flex-shrink-0 flex items-center">{getFileIcon(langInfo.ext, 14)}</span>
-                          <span className="font-semibold text-[#e6edf3]">{langInfo.name}</span>
-                          <span>•</span>
-                          {getStatusText(run.status)}
-                          <span>•</span>
-                          <span className="text-[#e6edf3]">{run.executionTime}</span>
-                        </div>
-                        <div className="text-[10px] opacity-60">
-                          {run.timestamp}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+            </button>
+          ) : (
+            <button
+              onClick={onClearHistory}
+              disabled={history.length === 0}
+              className="w-full h-full flex items-center justify-center space-x-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold font-sans text-[#8b949e] hover:text-[#f85149] hover:bg-[#161b22]/40"
+              title="Clear Run History"
+            >
+              <Trash2 size={13} className={history.length === 0 ? "text-[#8b949e]" : "text-[#f85149]"} />
+              <span className={history.length === 0 ? "text-[#8b949e]" : "text-[#f85149]"}>Clear Logs</span>
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Tab Contents */}
+      {activeTab === 'output' ? (
+        // Output Viewer
+        <div className="flex-1 flex flex-col min-h-0 bg-transparent">
+          <div className="flex-1 p-4 overflow-y-auto font-sans text-xs select-text leading-relaxed relative">
+            {terminalLines && terminalLines.length > 0 ? (
+              <div className="font-mono whitespace-pre-wrap">
+                {terminalLines.map((line, i) => (
+                  <span key={i} className={
+                    line.type === 'error'  ? 'text-[#f85149]' :
+                    line.type === 'input'  ? 'text-[#58a6ff]' :
+                    line.type === 'system' ? 'text-[#d29922]' :
+                                             'text-[#e6edf3]'
+                  }>
+                    {line.type === 'input' ? `> ${line.text}` : line.text}
+                  </span>
+                ))}
+                <div ref={terminalEndRef} />
+              </div>
+            ) : isRunning ? (
+              <div className="flex flex-col items-center justify-center h-full text-[#8b949e] space-y-2.5 select-none">
+                <div className="w-6 h-6 border-2 border-[#58a6ff] border-t-transparent rounded-full animate-spin" />
+                <p className="text-[11px] animate-pulse">Executing code on sandbox...</p>
+              </div>
+            ) : error ? (
+              <div className="text-[#f85149] font-sans whitespace-pre-wrap">{error}</div>
+            ) : output ? (
+              <div className="text-[#e6edf3] font-sans whitespace-pre-wrap">{output}</div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-[#8b949e] space-y-2 select-none text-center font-sans">
+                <h3 className="text-[24px] font-bold text-[#e6edf3]">Welcome to CodeShell</h3>
+                <p className="text-[15px] font-medium text-[#8b949e] leading-relaxed">
+                  Write. Compile. Execute.
+                </p>
+                <p className="text-[14px] font-medium text-[#8b949e] leading-relaxed mt-2">
+                  Press Run or Ctrl + Enter to start coding.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Input Bar */}
+          {isRunning && (
+            <div className="h-9 border-t border-[#30363d] flex items-center px-3 bg-[#0d1117] flex-shrink-0">
+              <span className="text-[#58a6ff] font-mono text-xs mr-2">&gt;</span>
+              <input
+                value={terminalInput}
+                onChange={e => setTerminalInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    onSendInput(terminalInput);
+                    setTerminalInput('');
+                  }
+                }}
+                className="flex-1 bg-transparent text-[#e6edf3] text-xs outline-none font-mono"
+                placeholder="Type input and press Enter..."
+                autoFocus
+              />
+            </div>
+          )}
+
+          {/* Output Stats Footer */}
+          {!isRunning && status !== 'Ready' && (
+            <div className="h-8 bg-[#0d1117] border-t border-[#30363d] px-4 flex items-center text-[11px] font-sans text-[#8b949e] select-none flex-shrink-0">
+              {getStatusTextWithTime(status, executionTime)}
+            </div>
+          )}
+        </div>
+      ) : (
+        // History Log Viewer
+        <div className="flex-1 p-4 bg-transparent overflow-y-auto font-sans text-xs select-text leading-relaxed">
+          {history.length === 0 ? (
+            <div className="text-[#8b949e] italic flex items-center justify-center h-full select-none text-[11px]">
+              No execution logs found. Run code to populate the logs.
+            </div>
+          ) : (
+            <div className="flex flex-col space-y-3 select-none">
+              <div className="text-[10px] text-[#8b949e] uppercase font-bold tracking-wider border-b border-[#30363d] pb-2 flex justify-between font-sans">
+                <span>Last 20 Runs</span>
+                <span>Execution Log</span>
+              </div>
+              <div className="flex flex-col space-y-1.5">
+                {history.map((run) => {
+                  const langMap = {
+                    java: { name: 'Java', ext: 'main.java' },
+                    python: { name: 'Python', ext: 'main.py' },
+                    javascript: { name: 'JavaScript', ext: 'main.js' },
+                    cpp: { name: 'C++', ext: 'main.cpp' }
+                  };
+                  const langInfo = langMap[run.language] || { name: run.language, ext: 'main.txt' };
+                  
+                  const getStatusText = (s) => {
+                    switch (s) {
+                      case 'Success': return <span className="text-[#3fb950]">Success</span>;
+                      case 'Compilation Error': return <span className="text-[#d29922]">Compilation Error</span>;
+                      case 'Runtime Error': return <span className="text-[#f85149]">Runtime Error</span>;
+                      case 'Timeout': return <span className="text-[#db6d28]">Timeout</span>;
+                      case 'Killed': return <span className="text-[#f85149]">Killed</span>;
+                      default: return <span>{s}</span>;
+                    }
+                  };
+
+                  return (
+                    <div key={run.id} className="py-2 px-3 flex items-center justify-between hover:bg-[#21262d]/50 rounded-lg transition-all duration-150 border border-transparent hover:border-[#30363d] font-sans text-[11px] text-[#8b949e]">
+                      <div className="flex items-center space-x-2">
+                        <span className="flex-shrink-0 flex items-center">{getFileIcon(langInfo.ext, 14)}</span>
+                        <span className="font-semibold text-[#e6edf3]">{langInfo.name}</span>
+                        <span>•</span>
+                        {getStatusText(run.status)}
+                        <span>•</span>
+                        <span className="text-[#e6edf3]">{run.executionTime}</span>
+                      </div>
+                      <div className="text-[10px] opacity-60">
+                        {run.timestamp}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

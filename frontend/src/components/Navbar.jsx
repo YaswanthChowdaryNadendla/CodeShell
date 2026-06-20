@@ -7,6 +7,7 @@ export default function Navbar({
   setLanguage,
   onRun,
   onClear,
+  onStop,
   isRunning,
   status,
   code = '',
@@ -161,6 +162,17 @@ export default function Navbar({
         >
           <span className="text-sm font-semibold">↻</span>
           <span>Clear</span>
+        </button>
+
+        {/* Stop Button */}
+        <button
+          onClick={onStop}
+          disabled={!isRunning}
+          className="h-10 px-5 text-xs text-white bg-[#f85149] hover:bg-[#da3633] border border-[#f85149]/20 rounded-xl flex items-center space-x-1.5 transition-all duration-200 hover:scale-103 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed font-bold"
+          title="Stop Execution"
+        >
+          <span className="text-[10px] leading-none">■</span>
+          <span>Stop</span>
         </button>
 
         {/* Premium Run Button */}
