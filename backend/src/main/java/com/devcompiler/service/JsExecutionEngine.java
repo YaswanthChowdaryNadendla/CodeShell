@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class JsExecutionEngine implements ExecutionEngine {
 
-    private static final int TIMEOUT_SECONDS = 5;
+    private static final int TIMEOUT_SECONDS = 30;
 
     @Override
     public CompileResponse execute(String code, String input) {

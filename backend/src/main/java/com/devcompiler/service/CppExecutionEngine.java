@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class CppExecutionEngine implements ExecutionEngine {
 
-    private static final int TIMEOUT_SECONDS = 5;
+    private static final int TIMEOUT_SECONDS = 30;
     private static final String DEFAULT_GPP = "g++";
     private static final String FALLBACK_GPP = "C:\\msys64\\ucrt64\\bin\\g++.exe";
     private static final String MSYS_BIN_DIR = "C:\\msys64\\ucrt64\\bin";

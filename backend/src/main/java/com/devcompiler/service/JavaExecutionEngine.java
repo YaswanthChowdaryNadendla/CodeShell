@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 @Service
 public class JavaExecutionEngine implements ExecutionEngine {
 
-    private static final int TIMEOUT_SECONDS = 5;
+    private static final int TIMEOUT_SECONDS = 30;
 
     @Override
     public CompileResponse execute(String code, String input) {
