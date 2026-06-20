@@ -34,7 +34,7 @@ public class PythonExecutionEngine implements ExecutionEngine {
             Files.writeString(sourceFile, code, StandardCharsets.UTF_8);
 
             // 3. Execute: python script.py
-            ProcessBuilder pb = new ProcessBuilder("python", "script.py");
+            ProcessBuilder pb = new ProcessBuilder("python3", "script.py");
             pb.directory(tempDir.toFile());
 
             process = pb.start();

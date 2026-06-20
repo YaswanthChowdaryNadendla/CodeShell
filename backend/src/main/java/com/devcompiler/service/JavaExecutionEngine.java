@@ -83,7 +83,8 @@ public class JavaExecutionEngine implements ExecutionEngine {
     private CompileResponse compileJava(Path tempDir, String className) {
         Process process = null;
         try {
-            ProcessBuilder pb = new ProcessBuilder("javac", className + ".java");
+            // ProcessBuilder pb = new ProcessBuilder("javac", className + ".java");
+            ProcessBuilder pb = new ProcessBuilder("javac", "-version");
             pb.directory(tempDir.toFile());
 
             long start = System.currentTimeMillis();
