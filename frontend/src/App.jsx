@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Navbar from './components/Navbar';
 import CodeEditor from './components/CodeEditor';
 import ConsolePanel from './components/ConsolePanel';
 import Footer from './components/Footer';
 import Explorer from './components/Explorer';
-import { runCode } from './services/api';
 import { createExecutionSocket } from './services/websocket';
 
 const TEMPLATES = {
@@ -39,7 +38,9 @@ export default function App() {
     if (saved) {
       try {
         return JSON.parse(saved);
-      } catch {}
+      } catch (err) {
+        console.error("Failed to parse saved files:", err);
+      }
     }
     return INITIAL_FILES;
   });
@@ -53,7 +54,9 @@ export default function App() {
     if (saved) {
       try {
         return JSON.parse(saved);
-      } catch {}
+      } catch (err) {
+        console.error("Failed to parse open file IDs:", err);
+      }
     }
     return ['1', '2', '3', '4', '5'];
   });
@@ -82,9 +85,9 @@ export default function App() {
     }
   }, [toastMessage]);
 
-  const handleSave = (fileId = activeFileId) => {
+  const handleSave = useCallback((fileId = activeFileId) => {
     setDirtyFileIds(prev => prev.filter(id => id !== fileId));
-  };
+  }, [activeFileId]);
 
   // Global keydown listener for Alt + Shift + F and Ctrl + S
   useEffect(() => {
@@ -100,7 +103,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [activeFileId]);
+  }, [activeFileId, handleSave]);
 
   // Clean up WebSocket connection on component unmount
   useEffect(() => {
@@ -111,14 +114,15 @@ export default function App() {
     };
   }, []);
 
-  // Reset execution state and terminate active runs when switching files
-  useEffect(() => {
+  const cleanupExecutionState = () => {
     if (wsRef.current) {
       const activeSocket = wsRef.current;
       wsRef.current = null;
       try {
         activeSocket.send({ type: 'kill' });
-      } catch (err) {}
+      } catch (e) {
+        console.warn("Could not send kill message:", e);
+      }
       activeSocket.close();
     }
     setIsRunning(false);
@@ -127,7 +131,7 @@ export default function App() {
     setError('');
     setStatus('Ready');
     setExecutionTime('');
-  }, [activeFileId]);
+  };
 
   const handleBeautify = () => {
     setFormatTrigger(prev => prev + 1);
@@ -198,6 +202,9 @@ export default function App() {
 
   // Handle active file selection
   const handleSelectFile = (fileId) => {
+    if (fileId !== activeFileId) {
+      cleanupExecutionState();
+    }
     setActiveFileId(fileId);
     if (!openFileIds.includes(fileId)) {
       setOpenFileIds(prev => [...prev, fileId]);
@@ -212,6 +219,7 @@ export default function App() {
 
     // If closing active file, open next tab or first file
     if (activeFileId === fileId) {
+      cleanupExecutionState();
       if (filteredOpen.length > 0) {
         setActiveFileId(filteredOpen[0]);
       } else if (files.length > 0) {
@@ -222,6 +230,7 @@ export default function App() {
 
   // Handle new file creation
   const handleCreateFile = (fileName) => {
+    cleanupExecutionState();
     const ext = fileName.split('.').pop().toLowerCase();
     let lang = 'plaintext';
     let initialContent = '';
@@ -281,6 +290,7 @@ export default function App() {
     setDirtyFileIds(prev => prev.filter(id => id !== fileId));
 
     if (activeFileId === fileId) {
+      cleanupExecutionState();
       if (filteredOpen.length > 0) {
         setActiveFileId(filteredOpen[0]);
       } else if (filteredFiles.length > 0) {
@@ -363,7 +373,7 @@ export default function App() {
     setExecutionTime('');
     
     const capitalize = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
-    let startMsg = 'Starting execution...';
+    let startMsg;
     if (activeFile.language === 'java') startMsg = 'Compiling Java code...';
     else if (activeFile.language === 'cpp') startMsg = 'Compiling C++ code...';
     else if (activeFile.language === 'python') startMsg = 'Starting Python...';
@@ -406,7 +416,7 @@ export default function App() {
           setIsRunning(false);
           setExecutionTime(msg.executionTime || '0ms');
           
-          let mappedStatus = 'Success';
+          let mappedStatus;
           if (msg.code === 0) {
             mappedStatus = 'Success';
           } else if (msg.code === -1) {
@@ -459,6 +469,7 @@ export default function App() {
       // onError
       (err) => {
         if (wsRef.current !== socket) return;
+        console.error("WebSocket connection error:", err);
         setTerminalLines(prev => {
           const filtered = prev.filter(line => !line.isTemporary);
           return [...filtered, { type: 'error', text: '\n[WebSocket Connection Error]\n' }];

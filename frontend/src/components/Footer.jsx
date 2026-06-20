@@ -26,7 +26,7 @@ export default function Footer() {
 
       {/* Center — AlgoForge promo */}
       <span className="text-[12px] font-semibold">
-        {'DSA Hard? '}
+        {'Is DSA Hard? '}
         <a
           href="https://algoforge-dsa.vercel.app"
           target="_blank"
